@@ -74,23 +74,34 @@ type HashRevealTx struct {
 	// ViewTag is a 1-byte hint for receiver-side fast scanning (analogous to ERC-5564 view tags).
 	// Does not affect consensus.
 	ViewTag byte
+
+	// NewCommitment is the hash-chain anchor for the next chain, when this reveal is the
+	// depth-exhausting Nth step (chainDepth goes 1→0). Zero means no renewal.
+	// If non-zero, op-geth calls NullifierTree.renewChain() after markSpent().
+	// Constraint: trunc20(keccak256("OP_HASH_ADDR_v1" ‖ NewCommitment)) == From.
+	NewCommitment common.Hash
+
+	// NewChainLength is the depth of the new hash-chain (ignored when NewCommitment is zero).
+	NewChainLength uint32
 }
 
 // copy creates a deep copy of the transaction data.
 func (tx *HashRevealTx) copy() TxData {
 	cpy := &HashRevealTx{
-		ChainID:   new(big.Int),
-		From:      tx.From,
-		Nonce:     tx.Nonce,
-		To:        copyAddressPtr(tx.To),
-		Value:     new(big.Int),
-		Gas:       tx.Gas,
-		GasFeeCap: new(big.Int),
-		GasTipCap: new(big.Int),
-		Data:      common.CopyBytes(tx.Data),
-		Nullifier: tx.Nullifier,
-		PreImage:  tx.PreImage,
-		ViewTag:   tx.ViewTag,
+		ChainID:        new(big.Int),
+		From:           tx.From,
+		Nonce:          tx.Nonce,
+		To:             copyAddressPtr(tx.To),
+		Value:          new(big.Int),
+		Gas:            tx.Gas,
+		GasFeeCap:      new(big.Int),
+		GasTipCap:      new(big.Int),
+		Data:           common.CopyBytes(tx.Data),
+		Nullifier:      tx.Nullifier,
+		PreImage:       tx.PreImage,
+		ViewTag:        tx.ViewTag,
+		NewCommitment:  tx.NewCommitment,
+		NewChainLength: tx.NewChainLength,
 	}
 	if tx.ChainID != nil {
 		cpy.ChainID.Set(tx.ChainID)
@@ -161,26 +172,30 @@ func (tx *HashRevealTx) decode(input []byte) error {
 // txDigest = keccak256(RLP(ChainID, From, Nonce, To, Value, Gas, GasFeeCap, GasTipCap, Data))
 func (tx *HashRevealTx) TxDigest() common.Hash {
 	type bindFields struct {
-		ChainID   *big.Int
-		From      common.Address
-		Nonce     uint64
-		To        *common.Address `rlp:"nil"`
-		Value     *big.Int
-		Gas       uint64
-		GasFeeCap *big.Int
-		GasTipCap *big.Int
-		Data      []byte
+		ChainID        *big.Int
+		From           common.Address
+		Nonce          uint64
+		To             *common.Address `rlp:"nil"`
+		Value          *big.Int
+		Gas            uint64
+		GasFeeCap      *big.Int
+		GasTipCap      *big.Int
+		Data           []byte
+		NewCommitment  common.Hash
+		NewChainLength uint32
 	}
 	encoded, _ := rlp.EncodeToBytes(&bindFields{
-		ChainID:   tx.ChainID,
-		From:      tx.From,
-		Nonce:     tx.Nonce,
-		To:        tx.To,
-		Value:     tx.Value,
-		Gas:       tx.Gas,
-		GasFeeCap: tx.GasFeeCap,
-		GasTipCap: tx.GasTipCap,
-		Data:      tx.Data,
+		ChainID:        tx.ChainID,
+		From:           tx.From,
+		Nonce:          tx.Nonce,
+		To:             tx.To,
+		Value:          tx.Value,
+		Gas:            tx.Gas,
+		GasFeeCap:      tx.GasFeeCap,
+		GasTipCap:      tx.GasTipCap,
+		Data:           tx.Data,
+		NewCommitment:  tx.NewCommitment,
+		NewChainLength: tx.NewChainLength,
 	})
 	return crypto.Keccak256Hash(encoded)
 }

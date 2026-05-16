@@ -28,8 +28,24 @@ var (
 	ErrHashReveal_InvalidNullifier = errors.New("hash-reveal: nullifier does not match preImage/nonce/txDigest")
 	ErrHashReveal_NullifierSpent   = errors.New("hash-reveal: nullifier already spent")
 	ErrHashReveal_CommitMismatch   = errors.New("hash-reveal: hashCommit from commit-tx does not match reveal")
+	ErrHashReveal_EarlyRenew       = errors.New("hash-reveal: NewCommitment set but chain is not at final step (depth != 1)")
+	ErrHashReveal_RenewAddrMismatch = errors.New("hash-reveal: NewCommitment does not derive to sender address")
+	ErrHashReveal_ZeroNewChainLen  = errors.New("hash-reveal: NewCommitment set but NewChainLength is zero")
 	ErrHashCommit_NotRegistered    = errors.New("hash-commit: account has no registered commitment")
 )
+
+// hashAddrDomain is keccak256("OP_HASH_ADDR_v1") — matches NullifierTree.sol ADDR_DOMAIN.
+var hashAddrDomain = crypto.Keccak256Hash([]byte("OP_HASH_ADDR_v1"))
+
+// deriveHashAddr computes trunc20(keccak256("OP_HASH_ADDR_v1" ‖ commitment)).
+// Must match OptimismPortalHash.commitmentToAddress() and Precompile 0x0101.
+func deriveHashAddr(commitment common.Hash) common.Address {
+	var buf [64]byte
+	copy(buf[:32], hashAddrDomain[:])
+	copy(buf[32:], commitment[:])
+	h := crypto.Keccak256Hash(buf[:])
+	return common.Address(h[12:])
+}
 
 // hashRevealPreCheck validates a HashRevealTx before EVM execution.
 // This replaces the ECDSA signature check that would normally happen for other tx types.
@@ -78,6 +94,19 @@ func hashRevealPreCheck(st *stateTransition, tx *types.HashRevealTx) error {
 		return ErrHashReveal_NullifierSpent
 	}
 
+	// 5b. Renewal validation: NewCommitment may only be set on the depth-exhausting step.
+	if tx.NewCommitment != (common.Hash{}) {
+		if ns.ChainDepth(from) != 1 {
+			return ErrHashReveal_EarlyRenew
+		}
+		if tx.NewChainLength == 0 {
+			return ErrHashReveal_ZeroNewChainLen
+		}
+		if deriveHashAddr(tx.NewCommitment) != from {
+			return ErrHashReveal_RenewAddrMismatch
+		}
+	}
+
 	// 6. Verify hashCommit from the preceding commit-tx.
 	//    The commit-tx stored hashCommit in a transient/block-local mapping (BlockContext.HashCommitSlots).
 	//    Phase 0 devnet bypass: if HashCommitSlots is nil (block builder did not initialise it),
@@ -98,9 +127,15 @@ func hashRevealPreCheck(st *stateTransition, tx *types.HashRevealTx) error {
 
 // hashRevealPostExec advances the NullifierTree state after a successful HashRevealTx.
 // Must be called after EVM execution completes (even if EVM reverted — the auth is consumed).
+// If tx.NewCommitment is non-zero and this was the depth-exhausting step, atomically
+// renews the hash-chain to the new commitment.
 func hashRevealPostExec(st *stateTransition, tx *types.HashRevealTx) {
 	ns := NewNullifierState(st.state)
 	ns.MarkSpent(tx.From, tx.Nullifier, tx.PreImage)
+	// After MarkSpent, chainDepth is 0 iff this was the last step.
+	if tx.NewCommitment != (common.Hash{}) && ns.ChainDepth(tx.From) == 0 {
+		ns.RenewChain(tx.From, tx.NewCommitment, tx.NewChainLength)
+	}
 }
 
 // hashCommitPreCheck validates a HashCommitTx: sender must be registered in NullifierTree.

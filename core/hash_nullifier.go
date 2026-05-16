@@ -100,6 +100,28 @@ func (n *NullifierState) MarkSpent(account common.Address, nullifier common.Hash
 	n.state.SetState(NullifierTreeAddress, depthSlot, depthVal)
 }
 
+// RenewChain sets a new commitment anchor after the previous chain is exhausted.
+// Must be called only when ChainDepth(account) == 0.
+// Caller must have verified that newCommitment derives to account via trunc20(keccak256(ADDR_DOMAIN ‖ C)).
+func (n *NullifierState) RenewChain(account common.Address, newCommitment common.Hash, newChainLength uint32) {
+	// commitmentOf[account] = newCommitment
+	commitSlot := mappingSlot(addrToHash(account), uint64(2))
+	n.state.SetState(NullifierTreeAddress, commitSlot, newCommitment)
+
+	// lastReveal[account] = newCommitment  (new chain anchor)
+	revealSlot := mappingSlot(addrToHash(account), uint64(3))
+	n.state.SetState(NullifierTreeAddress, revealSlot, newCommitment)
+
+	// chainDepth[account] = newChainLength
+	depthSlot := mappingSlot(addrToHash(account), uint64(4))
+	var depthVal common.Hash
+	depthVal[28] = byte(newChainLength >> 24)
+	depthVal[29] = byte(newChainLength >> 16)
+	depthVal[30] = byte(newChainLength >> 8)
+	depthVal[31] = byte(newChainLength)
+	n.state.SetState(NullifierTreeAddress, depthSlot, depthVal)
+}
+
 // -------------------------------------------------------------------------
 // Storage slot helpers
 // -------------------------------------------------------------------------
@@ -114,6 +136,11 @@ func mappingSlot(key common.Hash, baseSlot interface{}) common.Hash {
 	var b common.Hash
 	switch v := baseSlot.(type) {
 	case uint64:
+		b[31] = byte(v)
+		if v > 0xff {
+			b[30] = byte(v >> 8)
+		}
+	case int:
 		b[31] = byte(v)
 		if v > 0xff {
 			b[30] = byte(v >> 8)

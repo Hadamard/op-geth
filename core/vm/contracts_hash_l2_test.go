@@ -5,6 +5,7 @@
 package vm
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -129,6 +130,90 @@ func TestPrecompiledContractsOnyx(t *testing.T) {
 		if _, ok := PrecompiledContractsOnyx[addr]; !ok {
 			t.Errorf("Onyx set missing Isthmus precompile at %s", addr)
 		}
+	}
+}
+
+// TestPoseidonBN254Precompile verifies basic properties of the Poseidon-BN254 (t=3) precompile.
+func TestPoseidonBN254Precompile(t *testing.T) {
+	t.Parallel()
+
+	p := &poseidonBN254Precompile{}
+
+	// Gas is fixed regardless of input
+	if g := p.RequiredGas(nil); g != PoseidonGas {
+		t.Errorf("wrong gas: got %d, want %d", g, PoseidonGas)
+	}
+
+	// Short input must error
+	_, err := p.Run(make([]byte, 32))
+	if err == nil {
+		t.Error("expected error for short input (< 64 bytes)")
+	}
+
+	// Zero inputs: Poseidon(0, 0) must stay within BN254 prime
+	input := make([]byte, 64)
+	out, err := p.Run(input)
+	if err != nil {
+		t.Fatalf("Run(zero, zero) error: %v", err)
+	}
+	if len(out) != 32 {
+		t.Fatalf("expected 32-byte output, got %d", len(out))
+	}
+	result := new(big.Int).SetBytes(out)
+	if result.Cmp(poseidonP) >= 0 {
+		t.Error("output is not a valid BN254 field element (>= p)")
+	}
+
+	// Determinism: same input must produce same output
+	out2, _ := p.Run(input)
+	if string(out) != string(out2) {
+		t.Error("Poseidon is not deterministic")
+	}
+
+	// Non-commutativity: Poseidon(a, b) != Poseidon(b, a) in general
+	var inputAB, inputBA [64]byte
+	a := big.NewInt(1)
+	b := big.NewInt(2)
+	aBytes := a.Bytes()
+	bBytes := b.Bytes()
+	copy(inputAB[32-len(aBytes):32], aBytes)
+	copy(inputAB[64-len(bBytes):64], bBytes)
+	copy(inputBA[32-len(bBytes):32], bBytes)
+	copy(inputBA[64-len(aBytes):64], aBytes)
+
+	outAB, _ := p.Run(inputAB[:])
+	outBA, _ := p.Run(inputBA[:])
+	if string(outAB) == string(outBA) {
+		// This is not guaranteed to fail for every pair, but for (1,2) it should differ.
+		t.Log("warning: Poseidon(1,2) == Poseidon(2,1), check MDS matrix symmetry")
+	}
+
+	// Inputs >= p must be mod-reduced and not error
+	pMinus1 := new(big.Int).Sub(poseidonP, big.NewInt(1))
+	var bigInput [64]byte
+	b1 := pMinus1.Bytes()
+	copy(bigInput[32-len(b1):32], b1)
+	copy(bigInput[64-len(b1):64], b1)
+	out3, err := p.Run(bigInput[:])
+	if err != nil {
+		t.Fatalf("Run(p-1, p-1) unexpected error: %v", err)
+	}
+	r3 := new(big.Int).SetBytes(out3)
+	if r3.Cmp(poseidonP) >= 0 {
+		t.Error("output for p-1 inputs is not a valid BN254 field element")
+	}
+
+	// Super-prime input (p itself mod-reduces to 0)
+	var pInput [64]byte
+	pb := poseidonP.Bytes()
+	copy(pInput[32-len(pb):32], pb)
+	outP, err := p.Run(pInput[:])
+	if err != nil {
+		t.Fatalf("Run(p, 0) unexpected error: %v", err)
+	}
+	// Poseidon(0, 0) and Poseidon(p, 0) must agree since p ≡ 0 (mod p)
+	if string(outP) != string(out) {
+		t.Error("Poseidon(p, 0) != Poseidon(0, 0): mod-reduction not applied correctly")
 	}
 }
 
