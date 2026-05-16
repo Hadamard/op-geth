@@ -65,6 +65,12 @@ type BlockContext struct {
 	// OperatorCostFunc returns the operator cost. The function may be nil
 	OperatorCostFunc types.OperatorCostFunc
 
+	// HashCommitSlots holds block-local hashCommit values written by HashCommitTx (0x7C)
+	// transactions. A subsequent HashRevealTx (0x7F) in the same block reads from this map to
+	// verify the two-phase commit-reveal binding. Initialized by the block processor; nil in
+	// legacy / non-hash-L2 contexts (commit verification is skipped when nil — devnet mode).
+	HashCommitSlots map[common.Address]common.Hash
+
 	// Block information
 	Coinbase    common.Address // Provides information for COINBASE
 	GasLimit    uint64         // Provides information for GASLIMIT

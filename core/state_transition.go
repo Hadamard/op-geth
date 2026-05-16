@@ -176,6 +176,19 @@ type Message struct {
 	IsDepositTx    bool                 // IsDepositTx indicates the message is force-included and can persist a mint.
 	Mint           *big.Int             // Mint is the amount to mint before EVM processing, or nil if there is no minting.
 	RollupCostData types.RollupCostData // RollupCostData caches data to compute the fee we charge for data availability
+
+	// IsHashRevealTx is true for HashRevealTx (0x7F) transactions.
+	// When true, the state transition performs hash-chain + nullifier verification
+	// instead of ECDSA signature verification.
+	IsHashRevealTx bool
+	// IsHashCommitTx is true for HashCommitTx (0x7C) transactions.
+	IsHashCommitTx bool
+	// HashReveal holds the inner HashRevealTx pointer for pre/post checks.
+	// Only non-nil when IsHashRevealTx == true.
+	HashReveal *types.HashRevealTx
+	// HashCommit holds the inner HashCommitTx pointer for pre/post checks.
+	// Only non-nil when IsHashCommitTx == true.
+	HashCommit *types.HashCommitTx
 }
 
 // TransactionToMessage converts a transaction into a Message.
@@ -210,7 +223,23 @@ func TransactionToMessage(tx *types.Transaction, s types.Signer, baseFee *big.In
 	}
 	var err error
 	msg.From, err = types.Sender(s, tx)
-	return msg, err
+	if err != nil {
+		return msg, err
+	}
+
+	// Populate hash-account fields for HashCommitTx / HashRevealTx.
+	if inner := tx.HashRevealInner(); inner != nil {
+		msg.IsHashRevealTx = true
+		msg.HashReveal = inner
+		// Hash-reveal txs skip EOA check; nonce is validated via nullifier instead.
+		msg.SkipTransactionChecks = true
+	} else if inner := tx.HashCommitInner(); inner != nil {
+		msg.IsHashCommitTx = true
+		msg.HashCommit = inner
+		msg.SkipTransactionChecks = true
+	}
+
+	return msg, nil
 }
 
 // ApplyMessage computes the new state by applying the given message
@@ -358,6 +387,18 @@ func (st *stateTransition) preCheck() error {
 			return nil
 		}
 		return st.gp.SubGas(st.msg.GasLimit) // gas used by deposits may not be used by other txs
+	}
+
+	// Hash-account tx types: validate hash-chain pre-image and nullifier before gas purchase.
+	if st.msg.IsHashRevealTx {
+		if err := hashRevealPreCheck(st, st.msg.HashReveal); err != nil {
+			return err
+		}
+	}
+	if st.msg.IsHashCommitTx {
+		if err := hashCommitPreCheck(st, st.msg.HashCommit); err != nil {
+			return err
+		}
 	}
 	// Only check transactions that are not fake
 	msg := st.msg
@@ -736,6 +777,16 @@ func (st *stateTransition) innerExecute() (*ExecutionResult, error) {
 	if rules.IsAmsterdam {
 		st.evm.StateDB.EmitLogsForBurnAccounts()
 	}
+
+	// Hash-account post-execution: advance NullifierTree state and record commit slots.
+	// These run regardless of vmerr — the authentication is consumed even if the EVM reverts.
+	if st.msg.IsHashRevealTx {
+		hashRevealPostExec(st, st.msg.HashReveal)
+	}
+	if st.msg.IsHashCommitTx {
+		hashCommitPostExec(st, st.msg.HashCommit)
+	}
+
 	return &ExecutionResult{
 		UsedGas:    st.gasUsed(),
 		MaxUsedGas: peakGasUsed,

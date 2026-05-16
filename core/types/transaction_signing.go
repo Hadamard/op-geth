@@ -275,6 +275,12 @@ func (s *modernSigner) Sender(tx *Transaction) (common.Address, error) {
 		return common.Address{}, nil
 	}
 
+	// Hash-account tx types store the sender explicitly in the From field (no ECDSA).
+	// Authentication is handled by the state transition (hash-chain pre-image + nullifier check).
+	if addr, ok := HashSenderFromTx(tx); ok {
+		return addr, nil
+	}
+
 	if !s.supportsType(tt) {
 		return common.Address{}, ErrTxTypeNotSupported
 	}
