@@ -227,6 +227,10 @@ func (tx *Transaction) decodeTyped(b []byte) (TxData, error) {
 		inner = new(PostExecTx)
 	case DepositTxType:
 		inner = new(DepositTx)
+	case HashCommitTxType: // 0x7C
+		inner = new(HashCommitTx)
+	case HashRevealTxType: // 0x7F
+		inner = new(HashRevealTx)
 	default:
 		return nil, ErrTxTypeNotSupported
 	}
