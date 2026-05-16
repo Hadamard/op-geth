@@ -322,6 +322,8 @@ func init() {
 func activePrecompiledContracts(rules params.Rules) PrecompiledContracts {
 	// note: the order of these switch cases is important
 	switch {
+	case rules.IsOptimismOnyx:
+		return PrecompiledContractsOnyx
 	case rules.IsOptimismJovian:
 		return PrecompiledContractsJovian
 	case rules.IsOptimismIsthmus:
@@ -357,6 +359,8 @@ func ActivePrecompiledContracts(rules params.Rules) PrecompiledContracts {
 // ActivePrecompiles returns the precompile addresses enabled with the current configuration.
 func ActivePrecompiles(rules params.Rules) []common.Address {
 	switch {
+	case rules.IsOptimismOnyx:
+		return PrecompiledAddressesOnyx
 	case rules.IsOptimismJovian:
 		return PrecompiledAddressesJovian
 	case rules.IsOptimismIsthmus:

@@ -517,6 +517,7 @@ type ChainConfig struct {
 	IsthmusTime  *uint64 `json:"isthmusTime,omitempty"`  // Isthmus switch time (nil = no fork, 0 = already on Optimism Isthmus)
 	JovianTime   *uint64 `json:"jovianTime,omitempty"`   // Jovian switch time (nil = no fork, 0 = already on Optimism Jovian)
 	KarstTime    *uint64 `json:"karstTime,omitempty"`    // Karst switch time (nil = no fork, 0 = already on Optimism Karst)
+	OnyxTime     *uint64 `json:"onyxTime,omitempty"`     // Onyx switch time (nil = no fork, 0 = already on Optimism Onyx — activates Hash-Only L2)
 
 	InteropTime *uint64 `json:"interopTime,omitempty"` // Interop switch time (nil = no fork, 0 = already on optimism interop)
 
@@ -676,6 +677,9 @@ func (c *ChainConfig) String() string {
 	}
 	if c.JovianTime != nil {
 		result += fmt.Sprintf(", Jovian: %v", *c.JovianTime)
+	}
+	if c.OnyxTime != nil {
+		result += fmt.Sprintf(", Onyx: %v", *c.OnyxTime)
 	}
 	if c.InteropTime != nil {
 		result += fmt.Sprintf(", Interop: %v", *c.InteropTime)
@@ -1025,6 +1029,10 @@ func (c *ChainConfig) IsKarst(time uint64) bool {
 	return isTimestampForked(c.KarstTime, time)
 }
 
+func (c *ChainConfig) IsOnyx(time uint64) bool {
+	return isTimestampForked(c.OnyxTime, time)
+}
+
 func (c *ChainConfig) IsInterop(time uint64) bool {
 	return isTimestampForked(c.InteropTime, time)
 }
@@ -1086,6 +1094,10 @@ func (c *ChainConfig) IsOptimismJovian(time uint64) bool {
 
 func (c *ChainConfig) IsOptimismKarst(time uint64) bool {
 	return c.IsOptimism() && c.IsKarst(time)
+}
+
+func (c *ChainConfig) IsOptimismOnyx(time uint64) bool {
+	return c.IsOptimism() && c.IsOnyx(time)
 }
 
 // IsOptimismPreBedrock returns true iff this is an optimism node & bedrock is not yet active
@@ -1623,6 +1635,7 @@ type Rules struct {
 	IsOptimismCanyon, IsOptimismFjord                       bool
 	IsOptimismGranite, IsOptimismHolocene                   bool
 	IsOptimismIsthmus, IsOptimismJovian                     bool
+	IsOptimismOnyx                                          bool
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -1659,6 +1672,7 @@ func (c *ChainConfig) Rules(num *big.Int, isMerge bool, timestamp uint64) Rules 
 		IsOptimismHolocene: isMerge && c.IsOptimismHolocene(timestamp),
 		IsOptimismIsthmus:  isMerge && c.IsOptimismIsthmus(timestamp),
 		IsOptimismJovian:   isMerge && c.IsOptimismJovian(timestamp),
+		IsOptimismOnyx:     isMerge && c.IsOptimismOnyx(timestamp),
 	}
 }
 

@@ -400,6 +400,12 @@ func (st *stateTransition) preCheck() error {
 			return err
 		}
 	}
+	// ecrecover gate: post-Onyx, only hash-typed transactions are accepted; ECDSA txs are rejected.
+	if st.evm.ChainConfig().IsOptimismOnyx(st.evm.Context.Time) {
+		if !st.msg.IsHashRevealTx && !st.msg.IsHashCommitTx {
+			return fmt.Errorf("%w: address %v — ECDSA transactions not permitted post-Onyx", ErrTxTypeNotSupported, st.msg.From.Hex())
+		}
+	}
 	// Only check transactions that are not fake
 	msg := st.msg
 	if !msg.SkipNonceChecks {
