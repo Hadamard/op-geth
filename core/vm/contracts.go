@@ -251,6 +251,21 @@ var PrecompiledContractsJovian = map[common.Address]PrecompiledContract{
 	common.BytesToAddress([]byte{0x01, 0x00}): &p256VerifyFjord{},
 }
 
+// PrecompiledContractsOnyx is the Isthmus precompile set extended with Hash-L2 precompiles.
+// It is the target precompile set for the "Onyx" hardfork that activates ECDSA-free L2.
+// Phase 0: activate this set manually in devnet config by returning it from activePrecompiledContracts
+// when IsOptimismOnyx (not yet in params.Rules — Phase 2 item).
+var PrecompiledContractsOnyx = func() PrecompiledContracts {
+	m := make(PrecompiledContracts, len(PrecompiledContractsIsthmus)+2)
+	for k, v := range PrecompiledContractsIsthmus {
+		m[k] = v
+	}
+	AddHashL2Precompiles(m)
+	return m
+}()
+
+var PrecompiledAddressesOnyx []common.Address
+
 var (
 	PrecompiledAddressesJovian    []common.Address
 	PrecompiledAddressesIsthmus   []common.Address
@@ -298,6 +313,9 @@ func init() {
 	}
 	for k := range PrecompiledContractsJovian {
 		PrecompiledAddressesJovian = append(PrecompiledAddressesJovian, k)
+	}
+	for k := range PrecompiledContractsOnyx {
+		PrecompiledAddressesOnyx = append(PrecompiledAddressesOnyx, k)
 	}
 }
 
