@@ -326,7 +326,8 @@ func (pool *LegacyPool) Filter(tx *types.Transaction) bool {
 // FilterType returns whether the legacy pool supports the given transaction type.
 func (pool *LegacyPool) FilterType(kind byte) bool {
 	switch kind {
-	case types.LegacyTxType, types.AccessListTxType, types.DynamicFeeTxType, types.SetCodeTxType:
+	case types.LegacyTxType, types.AccessListTxType, types.DynamicFeeTxType, types.SetCodeTxType,
+		types.HashCommitTxType, types.HashRevealTxType:
 		return true
 	default:
 		return false
