@@ -15,21 +15,24 @@ var StealthPoolAddress = common.HexToAddress("0x42000000000000000000000000000000
 
 // One-Time Address (OTA) key derivation domains — must match StealthPool.sol constants.
 var (
-	otaSpendDomain = crypto.Keccak256Hash([]byte("OP_OTA_SPEND_v1"))
-	otaViewDomain  = crypto.Keccak256Hash([]byte("OP_OTA_VIEW_v1"))
-	otaTagDomain   = crypto.Keccak256Hash([]byte("OP_OTA_TAG_v1"))
-	otaCommitDomain = crypto.Keccak256Hash([]byte("OP_COMMIT_v1"))
+	otaSpendDomain        = crypto.Keccak256Hash([]byte("OP_OTA_SPEND_v1"))
+	otaViewDomain         = crypto.Keccak256Hash([]byte("OP_OTA_VIEW_v1"))
+	otaTagDomain          = crypto.Keccak256Hash([]byte("OP_OTA_TAG_v1"))
 	hashAddrDomainStealth = crypto.Keccak256Hash([]byte("OP_HASH_ADDR_v1"))
 )
 
-// DeriveOTASpendSK derives the OTA spend secret key from the account's spend_sk and a random nonce r.
+// DeriveOTASpendSK derives the OTA spend secret key (= hash-chain seed) from the account's
+// spend_sk and a per-slot random nonce r.
 //
 //	ota_spend_sk = keccak256("OP_OTA_SPEND_v1" ‖ spend_sk ‖ r)
+//
+// This is chain[0] in the hash chain used for spending.
 func DeriveOTASpendSK(spendSK, r common.Hash) common.Hash {
 	return crypto.Keccak256Hash(otaSpendDomain[:], spendSK[:], r[:])
 }
 
-// DeriveOTAViewSK derives the OTA view secret key from the account's view_sk and a random nonce r.
+// DeriveOTAViewSK derives the OTA view secret key from the account's view_sk and nonce r.
+// Used only for scan-tag derivation; not required for spending.
 //
 //	ota_view_sk = keccak256("OP_OTA_VIEW_v1" ‖ view_sk ‖ r)
 func DeriveOTAViewSK(viewSK, r common.Hash) common.Hash {
@@ -49,32 +52,43 @@ func DeriveOTAScanTag(viewSK, r common.Hash) [4]byte {
 	return tag
 }
 
-// DeriveOTACommitment computes the OTA commitment from the derived spend/view keys and chainId.
+// DeriveOTAChainHead computes the OTA commitment by applying keccak256 chainLength times to
+// ota_spend_sk. The result is the hash-chain HEAD registered on-chain as lastReveal.
 //
-//	ota_commitment = keccak256("OP_COMMIT_v1" ‖ ota_spend_sk ‖ ota_view_sk ‖ chainId32)
+//	chain[0]    = ota_spend_sk           (bottom — kept private, revealed last)
+//	chain[k]    = keccak256(chain[k-1])
+//	commitment  = chain[chainLength]     (top — registered in NullifierTree, address anchor)
 //
-// chainId is encoded as a 32-byte big-endian value (same as in the main hash-account scheme).
-func DeriveOTACommitment(otaSpendSK, otaViewSK, chainID32 common.Hash) common.Hash {
-	return crypto.Keccak256Hash(otaCommitDomain[:], otaSpendSK[:], otaViewSK[:], chainID32[:])
+// Spending step k (k = 1..chainLength) reveals chain[chainLength-k].
+// Verify: keccak256(chain[chainLength-k]) == chain[chainLength-k+1] == lastReveal[addr] ✓
+func DeriveOTAChainHead(otaSpendSK common.Hash, chainLength uint32) common.Hash {
+	h := otaSpendSK
+	for i := uint32(0); i < chainLength; i++ {
+		h = crypto.Keccak256Hash(h[:])
+	}
+	return h
 }
 
-// DeriveOTAAddress computes the L2 address for an OTA commitment.
+// DeriveOTAAddress computes the L2 address for an OTA commitment (the chain head).
 //
-//	ota_address = trunc20(keccak256("OP_HASH_ADDR_v1" ‖ ota_commitment))
-func DeriveOTAAddress(otaCommitment common.Hash) common.Address {
-	h := crypto.Keccak256Hash(hashAddrDomainStealth[:], otaCommitment[:])
+//	ota_address = trunc20(keccak256("OP_HASH_ADDR_v1" ‖ commitment))
+func DeriveOTAAddress(commitment common.Hash) common.Address {
+	h := crypto.Keccak256Hash(hashAddrDomainStealth[:], commitment[:])
 	return common.BytesToAddress(h[12:])
 }
 
-// GenerateOTA is a convenience function that derives all OTA fields from the account's root
-// keys and a per-slot random nonce r. Returns (otaAddress, scanTag, otaCommitment).
+// GenerateOTA derives all OTA fields from the account's root keys, a per-slot random nonce r,
+// and the desired hash-chain length. Returns (otaAddress, scanTag, commitment).
+//
+// commitment = DeriveOTAChainHead(DeriveOTASpendSK(spendSK, r), chainLength)
+// addr       = DeriveOTAAddress(commitment)
 //
 // The caller keeps (spendSK, viewSK, r) private and publishes (otaAddress, scanTag).
-// chainID32 is the L2 chain ID encoded as 32-byte big-endian.
-func GenerateOTA(spendSK, viewSK, r, chainID32 common.Hash) (addr common.Address, tag [4]byte, commitment common.Hash) {
+// The commitment is passed to OptimismPortalHash.depositWithStealth() and registered in
+// NullifierTree via StealthPool.depositAndAnnounce() so the recipient can spend via HashRevealTx.
+func GenerateOTA(spendSK, viewSK, r common.Hash, chainLength uint32) (addr common.Address, tag [4]byte, commitment common.Hash) {
 	otaSpend := DeriveOTASpendSK(spendSK, r)
-	otaView := DeriveOTAViewSK(viewSK, r)
-	commitment = DeriveOTACommitment(otaSpend, otaView, chainID32)
+	commitment = DeriveOTAChainHead(otaSpend, chainLength)
 	addr = DeriveOTAAddress(commitment)
 	tag = DeriveOTAScanTag(viewSK, r)
 	return
