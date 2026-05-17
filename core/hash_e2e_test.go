@@ -267,3 +267,163 @@ func TestHashRevealTxE2E(t *testing.T) {
 	t.Logf("  chain depth: %d (exhausted)", depth)
 	t.Logf("  lastReveal: %x (= chain[0])", gotLastReveal)
 }
+
+// buildHashCommitTx constructs a HashCommitTx for the given reveal parameters.
+// txNonce is the commit tx's account nonce (for ordering).
+// revealNonce is the matching HashRevealTx's nonce — it is bound into hashCommit so the
+// commit cannot be replayed for a different reveal nonce.
+// hashCommit = keccak256("OP_COMMIT_BIND_v1" || nullifier || preImage || txDigest || revealNonce_u64be)
+func buildHashCommitTx(
+	chainID *big.Int,
+	from common.Address,
+	txNonce uint64,
+	revealNonce uint64,
+	nullifier common.Hash,
+	preImage [32]byte,
+	txDigest common.Hash,
+	expireAfterBlocks uint8,
+) *types.Transaction {
+	domainCommitBind := hashE2EKeccak([]byte("OP_COMMIT_BIND_v1"))
+	var nonceBuf [8]byte
+	nonceBuf[0] = byte(revealNonce >> 56)
+	nonceBuf[1] = byte(revealNonce >> 48)
+	nonceBuf[2] = byte(revealNonce >> 40)
+	nonceBuf[3] = byte(revealNonce >> 32)
+	nonceBuf[4] = byte(revealNonce >> 24)
+	nonceBuf[5] = byte(revealNonce >> 16)
+	nonceBuf[6] = byte(revealNonce >> 8)
+	nonceBuf[7] = byte(revealNonce)
+	hashCommit := hashE2EKeccak(domainCommitBind[:], nullifier[:], preImage[:], txDigest[:], nonceBuf[:])
+
+	inner := &types.HashCommitTx{
+		ChainID:           chainID,
+		From:              from,
+		Nonce:             txNonce,
+		HashCommit:        hashCommit,
+		Gas:               100_000,
+		GasFeeCap:         big.NewInt(params.InitialBaseFee * 2),
+		GasTipCap:         big.NewInt(1),
+		ExpireAfterBlocks: expireAfterBlocks,
+	}
+	return types.NewTx(inner)
+}
+
+// TestHashRevealTxCrossBlock verifies the cross-block Commit-Reveal path:
+// block N contains a HashCommitTx, block N+1 contains the matching HashRevealTx.
+// The pending commit is stored in NullifierTree state (slots 73/74) and consumed
+// on reveal. ExpireAfterBlocks=3 means the reveal is valid for blocks N..N+3.
+func TestHashRevealTxCrossBlock(t *testing.T) {
+	// Single spend: chainLen=1 keeps the test minimal.
+	const chainLen = uint32(1)
+
+	var spendSK [32]byte
+	spendSK[31] = 0x11
+	var r [32]byte
+	r[31] = 0x22
+
+	domainOTASpend := hashE2EKeccak([]byte("OP_OTA_SPEND_v1"))
+	otaSpendSK := [32]byte(hashE2EKeccak(domainOTASpend[:], spendSK[:], r[:]))
+
+	// chain[0] = otaSpendSK, chain[1] = keccak256(chain[0]) = commitment
+	chain := make([][32]byte, chainLen+1)
+	chain[0] = otaSpendSK
+	chain[1] = [32]byte(hashE2EKeccak(chain[0][:]))
+	commitment := chain[1]
+	otaAddr := hashE2EDeriveOTAAddress(commitment)
+
+	recipient := common.HexToAddress("0x000000000000000000000000000000000000dead")
+	initialBalance := new(big.Int).Mul(big.NewInt(1e9), big.NewInt(1e9))
+	sendValue := big.NewInt(500)
+
+	genesis := &Genesis{
+		Config:  params.AllEthashProtocolChanges,
+		BaseFee: big.NewInt(params.InitialBaseFee),
+		Alloc: GenesisAlloc{
+			otaAddr: {Balance: initialBalance},
+			NullifierTreeAddress: {
+				Nonce:   1,
+				Storage: hashE2EGenesisStorage(otaAddr, commitment, chainLen),
+			},
+		},
+	}
+
+	db := rawdb.NewMemoryDatabase()
+	blockchain, err := NewBlockChain(db, genesis, ethash.NewFaker(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("NewBlockChain: %v", err)
+	}
+	defer blockchain.Stop()
+
+	// CommitTx uses nonce=0; RevealTx uses nonce=1 (account nonce advances after commit).
+	// All cryptographic values (txDigest, nullifier, hashCommit) are derived from revealNonce=1.
+	commitNonce := uint64(0)
+	revealNonce := uint64(1)
+
+	preImage := chain[0] // step 1: reveal chain[0], keccak256(chain[0])==chain[1]==commitment
+	revealTx := buildHashRevealTx(
+		params.AllEthashProtocolChanges.ChainID,
+		otaAddr, revealNonce, recipient, sendValue, preImage,
+	)
+	revealInner := revealTx.HashRevealInner()
+	txDigest := revealInner.TxDigest()
+	nullifier := revealInner.Nullifier
+
+	// Block 1: HashCommitTx (ExpireAfterBlocks=3 → valid through block 1+3=4).
+	const expireAfterBlocks = uint8(3)
+	commitTx := buildHashCommitTx(
+		params.AllEthashProtocolChanges.ChainID,
+		otaAddr, commitNonce, revealNonce,
+		nullifier, preImage, txDigest,
+		expireAfterBlocks,
+	)
+
+	// Block 2: HashRevealTx (cross-block: pendingCommit from block 1).
+	// Generate 2 blocks: block 0 (commit), block 1 (reveal).
+	_, allBlocks, _ := GenerateChainWithGenesis(genesis, ethash.NewFaker(), 2, func(i int, b *BlockGen) {
+		switch i {
+		case 0:
+			b.AddTx(commitTx)
+		case 1:
+			b.AddTx(revealTx)
+		}
+	})
+
+	n, err := blockchain.InsertChain(allBlocks)
+	if err != nil {
+		t.Fatalf("InsertChain failed at block %d: %v", n+1, err)
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 blocks inserted, got %d", n)
+	}
+
+	stateDB, err := blockchain.State()
+	if err != nil {
+		t.Fatalf("blockchain.State: %v", err)
+	}
+	ns := NewNullifierState(stateDB)
+
+	// chainDepth must be 0 (exhausted after 1 spend).
+	if depth := ns.ChainDepth(otaAddr); depth != 0 {
+		t.Errorf("chainDepth: got %d, want 0", depth)
+	}
+	// lastReveal must equal chain[0].
+	if got := ns.LastReveal(otaAddr); got != common.Hash(chain[0]) {
+		t.Errorf("lastReveal: got %x, want %x", got, chain[0])
+	}
+	// Nullifier must be spent.
+	if !ns.IsSpent(otaAddr, nullifier) {
+		t.Errorf("nullifier not marked spent")
+	}
+	// Cross-block pending commit must be cleared after reveal.
+	if got := ns.PendingCommit(otaAddr); got != (common.Hash{}) {
+		t.Errorf("pendingCommit not cleared: %x", got)
+	}
+	// Recipient balance.
+	if bal := stateDB.GetBalance(recipient).ToBig(); bal.Cmp(sendValue) != 0 {
+		t.Errorf("recipient balance: got %s, want %s", bal, sendValue)
+	}
+
+	t.Logf("✓ Cross-block Commit-Reveal: commit in block 1, reveal in block 2")
+	t.Logf("  pendingCommit cleared: %v", ns.PendingCommit(otaAddr) == (common.Hash{}))
+	t.Logf("  nullifier spent: %v", ns.IsSpent(otaAddr, nullifier))
+}

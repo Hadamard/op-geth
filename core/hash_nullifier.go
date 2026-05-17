@@ -17,12 +17,16 @@ var NullifierTreeAddress = common.HexToAddress("0x420000000000000000000000000000
 
 // NullifierState wraps a vm.StateDB for typed access to NullifierTree predeploy storage.
 //
-// NullifierTree Solidity storage layout:
-//   slot 0: systemCaller (address, 20B) + _initialized (bool, 1B) — packed
-//   slot 1: spentNullifiers  mapping(address => mapping(bytes32 => bool))
-//   slot 2: commitmentOf     mapping(address => bytes32)
-//   slot 3: lastReveal       mapping(address => bytes32)
-//   slot 4: chainDepth       mapping(address => uint32)
+// NullifierTree Solidity storage layout (relevant slots):
+//   slot 0:   systemCaller (address, 20B) + _initialized (bool, 1B) — packed
+//   slot 1:   spentNullifiers  mapping(address => mapping(bytes32 => bool))
+//   slot 2:   commitmentOf     mapping(address => bytes32)
+//   slot 3:   lastReveal       mapping(address => bytes32)
+//   slot 4:   chainDepth       mapping(address => uint32)
+//   slots 5–71: IMT state (nextLeafIndex, nullifierMerkleRoot, filledSubtrees, _zeros)
+//   slot 72:  stealthPoolCaller (address)
+//   slot 73:  pendingCommits   mapping(address => bytes32)  — cross-block commit value
+//   slot 74:  commitExpiry     mapping(address => uint64)   — expiry block (right-aligned)
 //
 // All slot calculations use Solidity's standard keccak256(abi.encode(key, baseSlot)).
 type NullifierState struct {
@@ -120,6 +124,45 @@ func (n *NullifierState) RenewChain(account common.Address, newCommitment common
 	depthVal[30] = byte(newChainLength >> 8)
 	depthVal[31] = byte(newChainLength)
 	n.state.SetState(NullifierTreeAddress, depthSlot, depthVal)
+}
+
+// PendingCommit returns the pending cross-block hashCommit for the account (zero if none).
+func (n *NullifierState) PendingCommit(account common.Address) common.Hash {
+	slot := mappingSlot(addrToHash(account), uint64(73))
+	return n.state.GetState(NullifierTreeAddress, slot)
+}
+
+// CommitExpiry returns the last block number (inclusive) at which PendingCommit is valid.
+func (n *NullifierState) CommitExpiry(account common.Address) uint64 {
+	slot := mappingSlot(addrToHash(account), uint64(74))
+	v := n.state.GetState(NullifierTreeAddress, slot)
+	return uint64(v[24])<<56 | uint64(v[25])<<48 | uint64(v[26])<<40 | uint64(v[27])<<32 |
+		uint64(v[28])<<24 | uint64(v[29])<<16 | uint64(v[30])<<8 | uint64(v[31])
+}
+
+// SetPendingCommit stores a cross-block hashCommit with its expiry block number.
+// expiry is the last block number (inclusive) at which the reveal is valid.
+func (n *NullifierState) SetPendingCommit(account common.Address, commit common.Hash, expiry uint64) {
+	commitSlot := mappingSlot(addrToHash(account), uint64(73))
+	n.state.SetState(NullifierTreeAddress, commitSlot, commit)
+
+	expirySlot := mappingSlot(addrToHash(account), uint64(74))
+	var expiryVal common.Hash
+	expiryVal[24] = byte(expiry >> 56)
+	expiryVal[25] = byte(expiry >> 48)
+	expiryVal[26] = byte(expiry >> 40)
+	expiryVal[27] = byte(expiry >> 32)
+	expiryVal[28] = byte(expiry >> 24)
+	expiryVal[29] = byte(expiry >> 16)
+	expiryVal[30] = byte(expiry >> 8)
+	expiryVal[31] = byte(expiry)
+	n.state.SetState(NullifierTreeAddress, expirySlot, expiryVal)
+}
+
+// ClearPendingCommit removes the cross-block commit and expiry for the account.
+func (n *NullifierState) ClearPendingCommit(account common.Address) {
+	n.state.SetState(NullifierTreeAddress, mappingSlot(addrToHash(account), uint64(73)), common.Hash{})
+	n.state.SetState(NullifierTreeAddress, mappingSlot(addrToHash(account), uint64(74)), common.Hash{})
 }
 
 // -------------------------------------------------------------------------

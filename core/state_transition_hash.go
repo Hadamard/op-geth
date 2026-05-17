@@ -28,6 +28,7 @@ var (
 	ErrHashReveal_InvalidNullifier = errors.New("hash-reveal: nullifier does not match preImage/nonce/txDigest")
 	ErrHashReveal_NullifierSpent   = errors.New("hash-reveal: nullifier already spent")
 	ErrHashReveal_CommitMismatch   = errors.New("hash-reveal: hashCommit from commit-tx does not match reveal")
+	ErrHashReveal_CommitExpired    = errors.New("hash-reveal: pending commit has expired")
 	ErrHashReveal_EarlyRenew       = errors.New("hash-reveal: NewCommitment set but chain is not at final step (depth != 1)")
 	ErrHashReveal_RenewAddrMismatch = errors.New("hash-reveal: NewCommitment does not derive to sender address")
 	ErrHashReveal_ZeroNewChainLen  = errors.New("hash-reveal: NewCommitment set but NewChainLength is zero")
@@ -108,17 +109,36 @@ func hashRevealPreCheck(st *stateTransition, tx *types.HashRevealTx) error {
 	}
 
 	// 6. Verify hashCommit from the preceding commit-tx.
-	//    The commit-tx stored hashCommit in a transient/block-local mapping (BlockContext.HashCommitSlots).
-	//    Phase 0 devnet bypass: if HashCommitSlots is nil (block builder did not initialise it),
-	//    commit verification is skipped. In production the block builder always initialises this map.
-	if st.evm.Context.HashCommitSlots != nil {
+	//
+	//    Devnet bypass: skipped when HashCommitSlots is nil (block builder did not initialise
+	//    it) AND no cross-block pending commit exists in NullifierTree state.
+	//    In production the block builder always initialises HashCommitSlots before processing
+	//    transactions, so HashCommitSlots is non-nil even if no HashCommitTx was in this block.
+	//
+	//    Two accept paths:
+	//      a) Same-block: HashCommitSlots[from] set by a HashCommitTx earlier in this block.
+	//      b) Cross-block: pendingCommits[from] in persistent NullifierTree state (written by a
+	//         HashCommitTx in a prior block) and block.Number <= commitExpiry[from].
+	pendingCommit := ns.PendingCommit(from)
+	if st.evm.Context.HashCommitSlots != nil || pendingCommit != (common.Hash{}) {
 		expectedCommit := computeHashCommit(tx.Nullifier, tx.PreImage, txDigest, tx.Nonce)
-		storedCommit, ok := st.evm.Context.HashCommitSlots[from]
-		if !ok {
+
+		if storedCommit, ok := st.evm.Context.HashCommitSlots[from]; ok {
+			// Same-block path.
+			if storedCommit != expectedCommit {
+				return fmt.Errorf("%w: stored %s, computed %s", ErrHashReveal_CommitMismatch, storedCommit, expectedCommit)
+			}
+		} else if pendingCommit != (common.Hash{}) {
+			// Cross-block path.
+			if pendingCommit != expectedCommit {
+				return fmt.Errorf("%w: stored %s, computed %s", ErrHashReveal_CommitMismatch, pendingCommit, expectedCommit)
+			}
+			if st.evm.Context.BlockNumber.Uint64() > ns.CommitExpiry(from) {
+				return ErrHashReveal_CommitExpired
+			}
+		} else {
+			// HashCommitSlots non-nil (production mode) but no commit in either path.
 			return ErrHashReveal_CommitMismatch
-		}
-		if storedCommit != expectedCommit {
-			return fmt.Errorf("%w: stored %s, computed %s", ErrHashReveal_CommitMismatch, storedCommit, expectedCommit)
 		}
 	}
 
@@ -132,6 +152,8 @@ func hashRevealPreCheck(st *stateTransition, tx *types.HashRevealTx) error {
 func hashRevealPostExec(st *stateTransition, tx *types.HashRevealTx) {
 	ns := NewNullifierState(st.state)
 	ns.MarkSpent(tx.From, tx.Nullifier, tx.PreImage)
+	// Consume the cross-block pending commit (no-op if already zero).
+	ns.ClearPendingCommit(tx.From)
 	// After MarkSpent, chainDepth is 0 iff this was the last step.
 	if tx.NewCommitment != (common.Hash{}) && ns.ChainDepth(tx.From) == 0 {
 		ns.RenewChain(tx.From, tx.NewCommitment, tx.NewChainLength)
@@ -147,13 +169,25 @@ func hashCommitPreCheck(st *stateTransition, tx *types.HashCommitTx) error {
 	return nil
 }
 
-// hashCommitPostExec stores the hashCommit in the block-local commit map so the
-// matching reveal can verify it.
+// hashCommitPostExec stores the hashCommit for both the same-block and cross-block reveal paths.
+//
+// Same-block path: writes to BlockContext.HashCommitSlots (reset each block).
+// Cross-block path: writes to NullifierTree persistent state (slots 73/74) with an
+// expiry block number of currentBlock + ExpireAfterBlocks (default 5 if zero).
 func hashCommitPostExec(st *stateTransition, tx *types.HashCommitTx) {
+	// Same-block path.
 	if st.evm.Context.HashCommitSlots == nil {
 		st.evm.Context.HashCommitSlots = make(map[common.Address]common.Hash)
 	}
 	st.evm.Context.HashCommitSlots[tx.From] = tx.HashCommit
+
+	// Cross-block path: persist with expiry.
+	expireBlocks := uint64(tx.ExpireAfterBlocks)
+	if expireBlocks == 0 {
+		expireBlocks = 5 // default window
+	}
+	expiry := st.evm.Context.BlockNumber.Uint64() + expireBlocks
+	NewNullifierState(st.state).SetPendingCommit(tx.From, tx.HashCommit, expiry)
 }
 
 // -------------------------------------------------------------------------
