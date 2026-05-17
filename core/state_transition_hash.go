@@ -29,24 +29,11 @@ var (
 	ErrHashReveal_NullifierSpent   = errors.New("hash-reveal: nullifier already spent")
 	ErrHashReveal_CommitMismatch   = errors.New("hash-reveal: hashCommit from commit-tx does not match reveal")
 	ErrHashReveal_CommitExpired    = errors.New("hash-reveal: pending commit has expired")
-	ErrHashReveal_EarlyRenew       = errors.New("hash-reveal: NewCommitment set but chain is not at final step (depth != 1)")
-	ErrHashReveal_RenewAddrMismatch = errors.New("hash-reveal: NewCommitment does not derive to sender address")
-	ErrHashReveal_ZeroNewChainLen  = errors.New("hash-reveal: NewCommitment set but NewChainLength is zero")
+	ErrHashReveal_EarlyRenew      = errors.New("hash-reveal: NewCommitment set but chain is not at final step (depth != 1)")
+	ErrHashReveal_ZeroNewChainLen = errors.New("hash-reveal: NewCommitment set but NewChainLength is zero")
 	ErrHashCommit_NotRegistered    = errors.New("hash-commit: account has no registered commitment")
 )
 
-// hashAddrDomain is keccak256("OP_HASH_ADDR_v1") — matches NullifierTree.sol ADDR_DOMAIN.
-var hashAddrDomain = crypto.Keccak256Hash([]byte("OP_HASH_ADDR_v1"))
-
-// deriveHashAddr computes trunc20(keccak256("OP_HASH_ADDR_v1" ‖ commitment)).
-// Must match OptimismPortalHash.commitmentToAddress() and Precompile 0x0101.
-func deriveHashAddr(commitment common.Hash) common.Address {
-	var buf [64]byte
-	copy(buf[:32], hashAddrDomain[:])
-	copy(buf[32:], commitment[:])
-	h := crypto.Keccak256Hash(buf[:])
-	return common.Address(h[12:])
-}
 
 // hashRevealPreCheck validates a HashRevealTx before EVM execution.
 // This replaces the ECDSA signature check that would normally happen for other tx types.
@@ -96,15 +83,14 @@ func hashRevealPreCheck(st *stateTransition, tx *types.HashRevealTx) error {
 	}
 
 	// 5b. Renewal validation: NewCommitment may only be set on the depth-exhausting step.
+	// No address-derivation check: any commitment is valid for renewal because
+	// authorization comes from revealing the final preimage (depth == 1 before this step).
 	if tx.NewCommitment != (common.Hash{}) {
 		if ns.ChainDepth(from) != 1 {
 			return ErrHashReveal_EarlyRenew
 		}
 		if tx.NewChainLength == 0 {
 			return ErrHashReveal_ZeroNewChainLen
-		}
-		if deriveHashAddr(tx.NewCommitment) != from {
-			return ErrHashReveal_RenewAddrMismatch
 		}
 	}
 
