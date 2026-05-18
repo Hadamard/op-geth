@@ -583,6 +583,10 @@ func (st *stateTransition) innerExecute() (*ExecutionResult, error) {
 	)
 
 	// Check clauses 4-5, subtract intrinsic gas if everything is correct
+	// HashCommitTx has no calldata and no EVM execution — use TxGas (21000) as intrinsic cost.
+	if st.msg.IsHashCommitTx {
+		contractCreation = false // prevents TxGasContractCreation (53000)
+	}
 	gas, err := IntrinsicGas(msg.Data, msg.AccessList, msg.SetCodeAuthorizations, contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
 	if err != nil {
 		return nil, err
@@ -642,7 +646,13 @@ func (st *stateTransition) innerExecute() (*ExecutionResult, error) {
 		ret   []byte
 		vmerr error // vm errors do not effect consensus and are therefore not assigned to err
 	)
-	if contractCreation {
+	if st.msg.IsHashCommitTx {
+		// HashCommitTx increments the nonce (like a normal call); the paired HashRevealTx
+		// uses nonce N+1. Both hash-chain values (txDigest, nullifier, hashCommit) are
+		// computed from the reveal nonce (N+1) so the cross-block check in hashRevealPreCheck
+		// matches what hashCommitPostExec stored.
+		st.state.SetNonce(msg.From, st.state.GetNonce(msg.From)+1, tracing.NonceChangeEoACall)
+	} else if contractCreation {
 		ret, _, st.gasRemaining, vmerr = st.evm.Create(msg.From, msg.Data, st.gasRemaining, value)
 	} else {
 		// Increment the nonce for the next transaction.

@@ -96,7 +96,7 @@ func (tx *HashCommitTx) gasPrice() *big.Int     { return tx.GasFeeCap }
 func (tx *HashCommitTx) value() *big.Int        { return common.Big0 }
 func (tx *HashCommitTx) nonce() uint64          { return tx.Nonce }
 func (tx *HashCommitTx) from() common.Address   { return tx.From }
-func (tx *HashCommitTx) to() *common.Address    { return nil }
+func (tx *HashCommitTx) to() *common.Address { return nil }
 func (tx *HashCommitTx) isSystemTx() bool       { return false }
 
 func (tx *HashCommitTx) effectiveGasPrice(dst *big.Int, baseFee *big.Int) *big.Int {
