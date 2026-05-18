@@ -62,6 +62,15 @@ type txJSON struct {
 	Commitments []kzg4844.Commitment `json:"commitments,omitempty"`
 	Proofs      []kzg4844.Proof      `json:"proofs,omitempty"`
 
+	// HashRevealTx / HashCommitTx fields
+	Nullifier      *common.Hash    `json:"nullifier,omitempty"`
+	PreImage       *common.Hash    `json:"preImage,omitempty"`
+	ViewTag        *hexutil.Uint64 `json:"viewTag,omitempty"`
+	NewCommitment  *common.Hash    `json:"newCommitment,omitempty"`
+	NewChainLength *hexutil.Uint64 `json:"newChainLength,omitempty"`
+	HashCommit     *common.Hash    `json:"hashCommit,omitempty"`
+	ExpireAfter    *hexutil.Uint64 `json:"expireAfterBlocks,omitempty"`
+
 	// Only used for encoding:
 	Hash common.Hash `json:"hash"`
 }
@@ -210,6 +219,37 @@ func (tx *Transaction) MarshalJSON() ([]byte, error) {
 		enc.IsSystemTx = &itx.IsSystemTransaction
 		enc.Nonce = (*hexutil.Uint64)(&itx.EffectiveNonce)
 		// other fields will show up as null.
+
+	case *HashCommitTx:
+		enc.ChainID = (*hexutil.Big)(itx.ChainID)
+		from := itx.From
+		enc.From = &from
+		enc.Nonce = (*hexutil.Uint64)(&itx.Nonce)
+		enc.HashCommit = &itx.HashCommit
+		enc.Gas = (*hexutil.Uint64)(&itx.Gas)
+		enc.MaxFeePerGas = (*hexutil.Big)(itx.GasFeeCap)
+		enc.MaxPriorityFeePerGas = (*hexutil.Big)(itx.GasTipCap)
+		expire := hexutil.Uint64(itx.ExpireAfterBlocks)
+		enc.ExpireAfter = &expire
+
+	case *HashRevealTx:
+		enc.ChainID = (*hexutil.Big)(itx.ChainID)
+		from := itx.From
+		enc.From = &from
+		enc.Nonce = (*hexutil.Uint64)(&itx.Nonce)
+		enc.To = itx.To
+		enc.Value = (*hexutil.Big)(itx.Value)
+		enc.Gas = (*hexutil.Uint64)(&itx.Gas)
+		enc.MaxFeePerGas = (*hexutil.Big)(itx.GasFeeCap)
+		enc.MaxPriorityFeePerGas = (*hexutil.Big)(itx.GasTipCap)
+		enc.Input = (*hexutil.Bytes)(&itx.Data)
+		enc.Nullifier = &itx.Nullifier
+		enc.PreImage = &itx.PreImage
+		viewTag := hexutil.Uint64(itx.ViewTag)
+		enc.ViewTag = &viewTag
+		enc.NewCommitment = &itx.NewCommitment
+		chainLen := hexutil.Uint64(itx.NewChainLength)
+		enc.NewChainLength = &chainLen
 	}
 	return json.Marshal(&enc)
 }
@@ -621,6 +661,107 @@ func (tx *Transaction) UnmarshalJSON(input []byte) error {
 			return errors.New("missing required field 'input' in transaction")
 		}
 		inner = &PostExecTx{Data: *dec.Input}
+
+	case HashCommitTxType:
+		// HashCommitTx: lenient parsing — geth may omit chainId/maxFeePerGas, fall back to gasPrice.
+		var itx HashCommitTx
+		if dec.ChainID != nil {
+			itx.ChainID = dec.ChainID.ToInt()
+		} else {
+			itx.ChainID = new(big.Int)
+		}
+		if dec.From != nil {
+			itx.From = *dec.From
+		}
+		if dec.Nonce != nil {
+			itx.Nonce = uint64(*dec.Nonce)
+		}
+		if dec.HashCommit != nil {
+			itx.HashCommit = *dec.HashCommit
+		}
+		if dec.Gas != nil {
+			itx.Gas = uint64(*dec.Gas)
+		}
+		switch {
+		case dec.MaxFeePerGas != nil:
+			itx.GasFeeCap = dec.MaxFeePerGas.ToInt()
+		case dec.GasPrice != nil:
+			itx.GasFeeCap = dec.GasPrice.ToInt()
+		default:
+			itx.GasFeeCap = new(big.Int)
+		}
+		switch {
+		case dec.MaxPriorityFeePerGas != nil:
+			itx.GasTipCap = dec.MaxPriorityFeePerGas.ToInt()
+		case dec.GasPrice != nil:
+			itx.GasTipCap = dec.GasPrice.ToInt()
+		default:
+			itx.GasTipCap = new(big.Int)
+		}
+		if dec.ExpireAfter != nil {
+			itx.ExpireAfterBlocks = uint8(*dec.ExpireAfter)
+		}
+		inner = &itx
+
+	case HashRevealTxType:
+		// HashRevealTx: lenient parsing — geth may omit chainId/maxFeePerGas, fall back to gasPrice.
+		var itx HashRevealTx
+		if dec.ChainID != nil {
+			itx.ChainID = dec.ChainID.ToInt()
+		} else {
+			itx.ChainID = new(big.Int)
+		}
+		if dec.From != nil {
+			itx.From = *dec.From
+		}
+		if dec.Nonce != nil {
+			itx.Nonce = uint64(*dec.Nonce)
+		}
+		itx.To = dec.To
+		if dec.Value != nil {
+			itx.Value = dec.Value.ToInt()
+		} else {
+			itx.Value = new(big.Int)
+		}
+		if dec.Gas != nil {
+			itx.Gas = uint64(*dec.Gas)
+		}
+		switch {
+		case dec.MaxFeePerGas != nil:
+			itx.GasFeeCap = dec.MaxFeePerGas.ToInt()
+		case dec.GasPrice != nil:
+			itx.GasFeeCap = dec.GasPrice.ToInt()
+		default:
+			itx.GasFeeCap = new(big.Int)
+		}
+		switch {
+		case dec.MaxPriorityFeePerGas != nil:
+			itx.GasTipCap = dec.MaxPriorityFeePerGas.ToInt()
+		case dec.GasPrice != nil:
+			itx.GasTipCap = dec.GasPrice.ToInt()
+		default:
+			itx.GasTipCap = new(big.Int)
+		}
+		if dec.Input != nil {
+			itx.Data = *dec.Input
+		}
+		if dec.Nullifier != nil {
+			itx.Nullifier = *dec.Nullifier
+		}
+		if dec.PreImage != nil {
+			itx.PreImage = *dec.PreImage
+		}
+		if dec.ViewTag != nil {
+			itx.ViewTag = byte(*dec.ViewTag)
+		}
+		if dec.NewCommitment != nil {
+			itx.NewCommitment = *dec.NewCommitment
+		}
+		if dec.NewChainLength != nil {
+			itx.NewChainLength = uint32(*dec.NewChainLength)
+		}
+		inner = &itx
+
 	default:
 		return ErrTxTypeNotSupported
 	}
