@@ -1,3 +1,90 @@
+# Hadamard/op-geth — Hash-Only L2 Execution Engine
+
+This is a research fork of [op-geth](https://github.com/ethereum-optimism/op-geth) (OP Stack execution layer) extended with two new transaction types and an ECDSA-free state transition for the **Hash-Only L2** protocol.
+
+> Part of [Hadamard/OP](https://github.com/Hadamard/OP) — a post-quantum OP Stack rollup where all L2 authentication uses hash-preimage reveals instead of elliptic-curve signatures.
+
+**Branch:** `feat/hash-l2-txtypes`  
+**Latest commit:** `9cbad25` — cross-block Commit-Reveal (nonce N+1 design, contractCreation override)
+
+---
+
+## Hash-Only L2 Changes
+
+### New Transaction Types
+
+| TxType | Hex | Name | Description |
+|--------|-----|------|-------------|
+| `0x7C` | 124 | `HashCommitTx` | Commit phase — binds `txDigest` in `hashCommit` before revealing the preimage |
+| `0x7F` | 127 | `HashRevealTx` | Reveal phase — authenticates via hash-chain preimage, no ECRECOVER |
+
+> `0x7E` = DepositTx (standard OP Stack). `0x7D` = PostExecTxType (reserved).
+
+### New Files
+
+| File | Description |
+|------|-------------|
+| `core/types/tx_hashcommit.go` | `HashCommitTx` struct, RLP encoding, innerTx interface |
+| `core/types/tx_hashreveal.go` | `HashRevealTx` struct, `TxDigest()`, `Nullifier` |
+| `core/types/tx_hashsigning.go` | `HashSenderFromTx()`, `HashRevealInner()`, `HashCommitInner()` |
+| `core/types/transaction_signing.go` | `modernSigner.Sender()` dispatches hash types without ECRECOVER |
+| `core/hash_nullifier.go` | `NullifierState` — reads/writes `NullifierTree` predeploy storage via slot math |
+| `core/state_transition_hash.go` | `hashRevealPreCheck` (6 steps), `hashCommitPostExec`, `hashRevealPostExec` |
+| `core/state_transition.go` | `IsHashRevealTx`/`IsHashCommitTx` message fields; ecrecover gate post-Onyx |
+| `core/vm/evm.go` | `BlockContext.HashCommitSlots` — block-local commit map for same-block path |
+| `core/vm/contracts_hash_l2.go` | Precompiles `0x0101` hashAddr, `0x0102` verifyHashChain, `0x0A` Poseidon-BN254 |
+| `core/vm/contracts.go` | `PrecompiledContractsOnyx`; `activePrecompiledContracts()` Onyx case |
+| `core/hash_stealth.go` | OTA key derivation helpers, `StealthPoolState` reader |
+| `core/hash_e2e_test.go` | `TestHashRevealTxE2E`, `TestHashRevealTxCrossBlock` integration tests |
+
+### Custom Precompiles (active post-Onyx hardfork)
+
+| Address | Name | Gas | Description |
+|---------|------|-----|-------------|
+| `0x0101` | `hashAddr` | 600 | `trunc20(keccak256("OP_HASH_ADDR_v1" ‖ commitment))` |
+| `0x0102` | `verifyHashChain` | 600 | `keccak256(curr) == prev → 0x01 / 0x00` |
+| `0x0A` | Poseidon-BN254 | 3000 | Poseidon hash (t=3, RF=8, RP=57) for NullifierTree IMT |
+
+> `0x0B`–`0x11` are reserved by EIP-2537 (BLS12-381). `0x0A` is safe post-Cancun (KZG point-evaluation is `0x0A` only until EIP-4844 activation — post-Cancun it is a precompile, but Onyx is only active after Cancun).
+
+### Commit-Reveal State Transition
+
+`HashCommitTx` execution in `state_transition.go`:
+1. `contractCreation = false` override → intrinsic gas = `TxGas` (21000), not `TxGasContractCreation` (53000)
+2. Skip EVM; only `SetNonce(from, N→N+1)`
+3. `hashCommitPostExec` writes `hashCommit` to `NullifierTree` slots 73 (`pendingCommits`) + 74 (`commitExpiry`)
+
+`HashRevealTx` 6-step pre-check in `state_transition_hash.go`:
+1. Verify `NullifierTree.isRegistered(from)` (OTA exists)
+2. Verify chain link: `keccak256(preImage) == lastReveal[from]`
+3. Verify nullifier not spent
+4. Verify `txDigest` matches reveal transaction fields
+5. Verify nullifier formula
+6. Verify `hashCommit` — same-block path (`BlockContext.HashCommitSlots`) OR cross-block path (`pendingCommits[from]`, block ≤ `commitExpiry[from]`)
+
+**Nonce design:** CommitTx sends with nonce N (increments to N+1). RevealTx sends with nonce N+1. All hash-chain bindings (txDigest, nullifier, hashCommit) use reveal nonce N+1.
+
+### Integration Tests
+
+```bash
+go test ./core/ -run "TestHashRevealTxE2E|TestHashRevealTxCrossBlock" -v
+```
+
+Both pass on `feat/hash-l2-txtypes` (commit `9cbad25`).
+
+### Building
+
+```bash
+git clone https://github.com/Hadamard/op-geth
+cd op-geth
+git checkout feat/hash-l2-txtypes
+go build ./cmd/geth
+```
+
+For use in the monorepo, see [Hadamard/OP](https://github.com/Hadamard/OP) (`feat/hash-only-l2`).
+
+---
+
 ## Go Ethereum
 
 Golang execution layer implementation of the Ethereum protocol.
