@@ -144,6 +144,17 @@ func hashRevealPostExec(st *stateTransition, tx *types.HashRevealTx) {
 	if tx.NewCommitment != (common.Hash{}) && ns.ChainDepth(tx.From) == 0 {
 		ns.RenewChain(tx.From, tx.NewCommitment, tx.NewChainLength)
 	}
+	// Handle registration: if tx targets HandleRegistry, register or release username.
+	if tx.To != nil && *tx.To == HandleRegistryAddress {
+		hr := NewHandleRegistryState(st.state)
+		if name, ok := HandleDataToName(tx.Data); ok {
+			if IsValidHandleName(name) {
+				hr.Register(tx.From, name)
+			}
+		} else {
+			hr.Release(tx.From)
+		}
+	}
 }
 
 // hashCommitPreCheck validates a HashCommitTx: sender must be registered in NullifierTree.
