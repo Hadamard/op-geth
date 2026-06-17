@@ -32,6 +32,8 @@ var (
 	ErrHashReveal_EarlyRenew      = errors.New("hash-reveal: NewCommitment set but chain is not at final step (depth != 1)")
 	ErrHashReveal_ZeroNewChainLen = errors.New("hash-reveal: NewCommitment set but NewChainLength is zero")
 	ErrHashCommit_NotRegistered    = errors.New("hash-commit: account has no registered commitment")
+	ErrHashReveal_HandleCooldown   = errors.New("hash-reveal: username may only be changed every 14 days")
+	ErrHashReveal_OTATooYoung      = errors.New("hash-reveal: OTA must be at least 1 hour old before deletion")
 )
 
 
@@ -128,6 +130,22 @@ func hashRevealPreCheck(st *stateTransition, tx *types.HashRevealTx) error {
 		}
 	}
 
+	// 7. Rate-limit: username may only be changed once every 14 days (protocol time).
+	if tx.To != nil && *tx.To == HandleRegistryAddress {
+		last := ns.LastHandleTimestamp(from)
+		if last != 0 && st.evm.Context.Time-last < 14*24*3600 {
+			return ErrHashReveal_HandleCooldown
+		}
+	}
+
+	// 8. Rate-limit: OTA deletion requires at least 1 hour after the first RevealTx.
+	if tx.To != nil && *tx.To == OTADeleteAddress {
+		created := ns.CreationTimestamp(from)
+		if created == 0 || st.evm.Context.Time-created < 3600 {
+			return ErrHashReveal_OTATooYoung
+		}
+	}
+
 	return nil
 }
 
@@ -137,6 +155,12 @@ func hashRevealPreCheck(st *stateTransition, tx *types.HashRevealTx) error {
 // renews the hash-chain to the new commitment.
 func hashRevealPostExec(st *stateTransition, tx *types.HashRevealTx) {
 	ns := NewNullifierState(st.state)
+
+	// Record creation timestamp on the first-ever RevealTx for this OTA.
+	if ns.CreationTimestamp(tx.From) == 0 {
+		ns.SetCreationTimestamp(tx.From, st.evm.Context.Time)
+	}
+
 	ns.MarkSpent(tx.From, tx.Nullifier, tx.PreImage)
 	// Consume the cross-block pending commit (no-op if already zero).
 	ns.ClearPendingCommit(tx.From)
@@ -150,6 +174,7 @@ func hashRevealPostExec(st *stateTransition, tx *types.HashRevealTx) {
 		if name, ok := HandleDataToName(tx.Data); ok {
 			if IsValidHandleName(name) {
 				hr.Register(tx.From, name)
+				ns.SetLastHandleTimestamp(tx.From, st.evm.Context.Time)
 			}
 		} else {
 			hr.Release(tx.From)

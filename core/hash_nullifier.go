@@ -175,6 +175,40 @@ func (n *NullifierState) ClearPendingCommit(account common.Address) {
 	n.state.SetState(NullifierTreeAddress, mappingSlot(addrToHash(account), uint64(74)), common.Hash{})
 }
 
+// LastHandleTimestamp returns the Unix timestamp (seconds) of the last successful handle
+// registration for the account. Zero means no handle has been registered yet.
+// Stored in slot 75.
+func (n *NullifierState) LastHandleTimestamp(account common.Address) uint64 {
+	v := n.state.GetState(NullifierTreeAddress, mappingSlot(addrToHash(account), uint64(75)))
+	return uint64(v[24])<<56 | uint64(v[25])<<48 | uint64(v[26])<<40 | uint64(v[27])<<32 |
+		uint64(v[28])<<24 | uint64(v[29])<<16 | uint64(v[30])<<8 | uint64(v[31])
+}
+
+// SetLastHandleTimestamp records the Unix timestamp of a successful handle registration.
+func (n *NullifierState) SetLastHandleTimestamp(account common.Address, ts uint64) {
+	var val common.Hash
+	val[24] = byte(ts >> 56); val[25] = byte(ts >> 48); val[26] = byte(ts >> 40); val[27] = byte(ts >> 32)
+	val[28] = byte(ts >> 24); val[29] = byte(ts >> 16); val[30] = byte(ts >> 8); val[31] = byte(ts)
+	n.state.SetState(NullifierTreeAddress, mappingSlot(addrToHash(account), uint64(75)), val)
+}
+
+// CreationTimestamp returns the Unix timestamp (seconds) of the account's first RevealTx.
+// Zero means no RevealTx has ever been executed for this account.
+// Stored in slot 76.
+func (n *NullifierState) CreationTimestamp(account common.Address) uint64 {
+	v := n.state.GetState(NullifierTreeAddress, mappingSlot(addrToHash(account), uint64(76)))
+	return uint64(v[24])<<56 | uint64(v[25])<<48 | uint64(v[26])<<40 | uint64(v[27])<<32 |
+		uint64(v[28])<<24 | uint64(v[29])<<16 | uint64(v[30])<<8 | uint64(v[31])
+}
+
+// SetCreationTimestamp records the Unix timestamp of the account's first RevealTx.
+func (n *NullifierState) SetCreationTimestamp(account common.Address, ts uint64) {
+	var val common.Hash
+	val[24] = byte(ts >> 56); val[25] = byte(ts >> 48); val[26] = byte(ts >> 40); val[27] = byte(ts >> 32)
+	val[28] = byte(ts >> 24); val[29] = byte(ts >> 16); val[30] = byte(ts >> 8); val[31] = byte(ts)
+	n.state.SetState(NullifierTreeAddress, mappingSlot(addrToHash(account), uint64(76)), val)
+}
+
 // -------------------------------------------------------------------------
 // Storage slot helpers
 // -------------------------------------------------------------------------
