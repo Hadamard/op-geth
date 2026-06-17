@@ -309,6 +309,17 @@ func (st *stateTransition) to() common.Address {
 }
 
 func (st *stateTransition) buyGas() error {
+	// Handle-registry RevealTxs and zero-balance CommitTxs are gas-free so that
+	// handle registration works from unfunded OTAs.
+	if isGasFreeHashTx(st.msg) {
+		if err := st.gp.SubGas(st.msg.GasLimit); err != nil {
+			return err
+		}
+		st.gasRemaining = st.msg.GasLimit
+		st.initialGas = st.msg.GasLimit
+		return nil
+	}
+
 	mgval := new(big.Int).SetUint64(st.msg.GasLimit)
 	mgval.Mul(mgval, st.msg.GasPrice)
 	var l1Cost *big.Int
@@ -891,6 +902,11 @@ func (st *stateTransition) calcRefund() uint64 {
 // returnGas returns ETH for remaining gas,
 // exchanged at the original rate.
 func (st *stateTransition) returnGas() {
+	// Gas-free hash txs (commit phase, handle registry, OTA delete) — nothing to return.
+	if isGasFreeHashTx(st.msg) {
+		return
+	}
+
 	remaining := uint256.NewInt(st.gasRemaining)
 	remaining.Mul(remaining, uint256.MustFromBig(st.msg.GasPrice))
 	st.state.AddBalance(st.msg.From, remaining, tracing.BalanceIncreaseGasReturn)
@@ -901,6 +917,9 @@ func (st *stateTransition) returnGas() {
 }
 
 func (st *stateTransition) refundIsthmusOperatorCost() {
+	if isGasFreeHashTx(st.msg) {
+		return
+	}
 	// Return ETH to transaction sender for operator cost overcharge.
 	operatorCostGasLimit := st.evm.Context.OperatorCostFunc(st.msg.GasLimit, st.evm.Context.Time)
 	operatorCostGasUsed := st.evm.Context.OperatorCostFunc(st.gasUsed(), st.evm.Context.Time)

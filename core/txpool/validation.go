@@ -311,38 +311,47 @@ func ValidateTransactionWithState(tx *types.Transaction, signer types.Signer, op
 			return fmt.Errorf("%w: tx nonce %v, gapped nonce %v", core.ErrNonceTooHigh, tx.Nonce(), gap)
 		}
 	}
-	// Ensure the transactor has enough funds to cover the transaction costs
-	var (
-		balance           = opts.State.GetBalance(from).ToBig()
-		cost256, overflow = TotalTxCost(tx, opts.RollupCostFn)
-	)
-	if overflow {
-		return fmt.Errorf("%w: total tx cost overflow", core.ErrInsufficientFunds)
-	}
-	cost := cost256.ToBig()
-	if balance.Cmp(cost) < 0 {
-		return fmt.Errorf("%w: balance %v, tx cost %v, overshot %v", core.ErrInsufficientFunds, balance, cost, new(big.Int).Sub(cost, balance))
-	}
-	// Ensure the transactor has enough funds to cover for replacements or nonce
-	// expansions without overdrafts
-	spent := opts.ExistingExpenditure(from)
-	if prev := opts.ExistingCost(from, tx.Nonce()); prev != nil {
-		bump := new(big.Int).Sub(cost, prev)
-		need := new(big.Int).Add(spent, bump)
-		if balance.Cmp(need) < 0 {
-			return fmt.Errorf("%w: balance %v, queued cost %v, tx bumped %v, overshot %v", core.ErrInsufficientFunds, balance, spent, bump, new(big.Int).Sub(need, balance))
+	// Ensure the transactor has enough funds to cover the transaction costs.
+	// Gas-free exceptions (mirror core.isGasFreeHashTx): all CommitTxs and RevealTxs
+	// targeting HandleRegistry or OTADelete predeploys require no ETH balance.
+	handleRegistryAddr := common.HexToAddress("0x4200000000000000000000000000000000000046")
+	otaDeleteAddr := common.HexToAddress("0x4200000000000000000000000000000000000047")
+	isGasFree := tx.Type() == types.HashCommitTxType ||
+		(tx.Type() == types.HashRevealTxType && tx.To() != nil &&
+			(*tx.To() == handleRegistryAddr || *tx.To() == otaDeleteAddr))
+	if !isGasFree {
+		var (
+			balance           = opts.State.GetBalance(from).ToBig()
+			cost256, overflow = TotalTxCost(tx, opts.RollupCostFn)
+		)
+		if overflow {
+			return fmt.Errorf("%w: total tx cost overflow", core.ErrInsufficientFunds)
 		}
-	} else {
-		need := new(big.Int).Add(spent, cost)
-		if balance.Cmp(need) < 0 {
-			return fmt.Errorf("%w: balance %v, queued cost %v, tx cost %v, overshot %v", core.ErrInsufficientFunds, balance, spent, cost, new(big.Int).Sub(need, balance))
+		cost := cost256.ToBig()
+		if balance.Cmp(cost) < 0 {
+			return fmt.Errorf("%w: balance %v, tx cost %v, overshot %v", core.ErrInsufficientFunds, balance, cost, new(big.Int).Sub(cost, balance))
 		}
-		// Transaction takes a new nonce value out of the pool. Ensure it doesn't
-		// overflow the number of permitted transactions from a single account
-		// (i.e. max cancellable via out-of-bound transaction).
-		if opts.UsedAndLeftSlots != nil {
-			if used, left := opts.UsedAndLeftSlots(from); left <= 0 {
-				return fmt.Errorf("%w: pooled %d txs", ErrAccountLimitExceeded, used)
+		// Ensure the transactor has enough funds to cover for replacements or nonce
+		// expansions without overdrafts
+		spent := opts.ExistingExpenditure(from)
+		if prev := opts.ExistingCost(from, tx.Nonce()); prev != nil {
+			bump := new(big.Int).Sub(cost, prev)
+			need := new(big.Int).Add(spent, bump)
+			if balance.Cmp(need) < 0 {
+				return fmt.Errorf("%w: balance %v, queued cost %v, tx bumped %v, overshot %v", core.ErrInsufficientFunds, balance, spent, bump, new(big.Int).Sub(need, balance))
+			}
+		} else {
+			need := new(big.Int).Add(spent, cost)
+			if balance.Cmp(need) < 0 {
+				return fmt.Errorf("%w: balance %v, queued cost %v, tx cost %v, overshot %v", core.ErrInsufficientFunds, balance, spent, cost, new(big.Int).Sub(need, balance))
+			}
+			// Transaction takes a new nonce value out of the pool. Ensure it doesn't
+			// overflow the number of permitted transactions from a single account
+			// (i.e. max cancellable via out-of-bound transaction).
+			if opts.UsedAndLeftSlots != nil {
+				if used, left := opts.UsedAndLeftSlots(from); left <= 0 {
+					return fmt.Errorf("%w: pooled %d txs", ErrAccountLimitExceeded, used)
+				}
 			}
 		}
 	}

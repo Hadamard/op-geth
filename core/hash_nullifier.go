@@ -126,6 +126,16 @@ func (n *NullifierState) RenewChain(account common.Address, newCommitment common
 	n.state.SetState(NullifierTreeAddress, depthSlot, depthVal)
 }
 
+// DeleteOTA zeroes all NullifierTree state for the account, making it permanently inactive.
+// Called by hashRevealPostExec when the RevealTx targets OTADeleteAddress.
+// Any username registered in HandleRegistry must be released separately by the caller.
+func (n *NullifierState) DeleteOTA(account common.Address) {
+	n.state.SetState(NullifierTreeAddress, mappingSlot(addrToHash(account), uint64(2)), common.Hash{}) // commitmentOf
+	n.state.SetState(NullifierTreeAddress, mappingSlot(addrToHash(account), uint64(3)), common.Hash{}) // lastReveal
+	n.state.SetState(NullifierTreeAddress, mappingSlot(addrToHash(account), uint64(4)), common.Hash{}) // chainDepth
+	n.ClearPendingCommit(account)
+}
+
 // PendingCommit returns the pending cross-block hashCommit for the account (zero if none).
 func (n *NullifierState) PendingCommit(account common.Address) common.Hash {
 	slot := mappingSlot(addrToHash(account), uint64(73))

@@ -13,6 +13,25 @@ import (
 // Usernames are registered here and globally unique on-chain.
 var HandleRegistryAddress = common.HexToAddress("0x4200000000000000000000000000000000000046")
 
+// OTADeleteAddress is the predeploy address for OTA self-deletion on L2.
+// A HashRevealTx targeting this address zeroes the sender's NullifierTree state
+// and releases any registered handle, making the OTA permanently inactive.
+var OTADeleteAddress = common.HexToAddress("0x4200000000000000000000000000000000000047")
+
+// isGasFreeHashTx reports whether the tx is processed without charging ETH gas.
+// On the Hash-Only L2, preimage-chain authentication provides spam protection;
+// ETH gas fees only apply to value-transfer RevealTxs. Metadata operations
+// (handle registration, OTA deletion) and the commit phase are always free.
+func isGasFreeHashTx(msg *Message) bool {
+	if msg.IsHashCommitTx {
+		return true
+	}
+	if msg.IsHashRevealTx && msg.To != nil {
+		return *msg.To == HandleRegistryAddress || *msg.To == OTADeleteAddress
+	}
+	return false
+}
+
 // HandleRegistryState wraps a vm.StateDB for typed access to HandleRegistry storage.
 //
 // Storage layout:
@@ -50,6 +69,9 @@ func (h *HandleRegistryState) Register(addr common.Address, name [32]byte) bool 
 	existing := h.AddressOf(name)
 	if existing != (common.Address{}) && existing != addr {
 		return false // taken by someone else
+	}
+	if existing == addr && h.NameOf(addr) == name {
+		return true // already registered, no-op (preimage is still consumed by the TX)
 	}
 	// Release old name if address already had one
 	old := h.NameOf(addr)

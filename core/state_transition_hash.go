@@ -155,6 +155,11 @@ func hashRevealPostExec(st *stateTransition, tx *types.HashRevealTx) {
 			hr.Release(tx.From)
 		}
 	}
+	// OTA self-deletion: zero out NullifierTree state and release any username.
+	if tx.To != nil && *tx.To == OTADeleteAddress {
+		ns.DeleteOTA(tx.From)
+		NewHandleRegistryState(st.state).Release(tx.From)
+	}
 }
 
 // hashCommitPreCheck validates a HashCommitTx: sender must be registered in NullifierTree.
